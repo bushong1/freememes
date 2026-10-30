@@ -1,0 +1,176 @@
+import { chromium } from 'playwright';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import gifenc from 'gifenc';
+const { GIFEncoder } = gifenc;
+import { parseGIF, decompressFrames } from 'gifuct-js';
+
+// Run against the production build without requiring a listening HTTP port.
+// Set BROWSER_EXECUTABLE and LD_LIBRARY_PATH if Chromium is provided externally.
+const browser = await chromium.launch({
+  executablePath: process.env.BROWSER_EXECUTABLE || undefined,
+  headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', ...(process.env.BROWSER_SINGLE_PROCESS ? ['--no-zygote', '--single-process'] : [])],
+});
+const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
+const errors = [];
+context.on('page', p => p.on('pageerror', e => errors.push(e.message)));
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.jpg': 'image/jpeg', '.ttf': 'font/ttf', '.svg': 'image/svg+xml' };
+await context.route('**/*', async route => {
+  const url = new URL(route.request().url());
+  if (url.hostname !== 'freememes.local') return route.abort();
+  try {
+    const file = path.join(process.cwd(), 'dist', decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
+    await route.fulfill({ body: await readFile(file), contentType: types[path.extname(file)] || 'application/octet-stream' });
+  } catch { await route.fulfill({ status: 404, body: 'Not found' }); }
+});
+const page = await context.newPage();
+await mkdir('test-results', { recursive: true });
+const bytesFromResult = async () => {
+  const bytes = await page.locator('.result-image-wrap img').evaluate(async image => [...new Uint8Array(await (await fetch(image.src)).arrayBuffer())]);
+  return Buffer.from(bytes);
+};
+try {
+  await page.goto('http://freememes.local/');
+  await page.waitForFunction(() => document.querySelector('.file-label')?.textContent.includes('a-very-relatable-cat'));
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({ path: 'test-results/desktop.png', fullPage: true });
+  assert.equal(await page.locator('.layer-row').count(), 2);
+  await page.getByRole('button',{name:'New image',exact:true}).click();
+  await page.getByRole('dialog',{name:'Bring your own pixels.'}).waitFor();
+  await page.screenshot({path:'test-results/new-image-dialog.png',fullPage:true});
+  const pasted=[...await readFile('public/studio-cat.jpg')];
+  await page.evaluate(bytes => {
+    const clipboard=new DataTransfer();
+    // A misleading extension must not override the actual JPEG file contents.
+    clipboard.items.add(new File([new Uint8Array(bytes)],'pasted-cat.png',{type:'image/png'}));
+    document.querySelector('.new-image-modal').dispatchEvent(new ClipboardEvent('paste',{clipboardData:clipboard,bubbles:true,cancelable:true}));
+  },pasted);
+  await page.waitForFunction(() => !document.querySelector('.new-image-modal'));
+  assert.equal(await page.locator('.file-kind').textContent(),'JPEG');
+  const remoteJpeg=await readFile('public/studio-cat.jpg');
+  await context.route('**/api/import',async route => {
+    const {url}=route.request().postDataJSON();
+    if (url.includes('youtube.com')) return route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'The timestamp is at or beyond the end of this video. Choose an earlier starting point.'})});
+    return route.fulfill({contentType:'image/jpeg',headers:{'X-Media-Name':'remote-cat.webp','X-Media-Source':'jpeg'},body:remoteJpeg});
+  });
+  await page.getByRole('button',{name:'New image',exact:true}).click();
+  await page.getByRole('tab',{name:'From URL',exact:true}).click();
+  await page.getByRole('textbox',{name:'Image or YouTube URL',exact:true}).fill('https://youtu.be/AbCdEfGh_-0?t=100');
+  await page.getByText('YouTube video detected',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Import YouTube video',exact:true}).click();
+  await page.getByRole('alert').filter({hasText:'earlier starting point'}).waitFor();
+  assert.match(await page.locator('.file-label').textContent(),/pasted-cat/);
+  await page.getByRole('textbox',{name:'Image or YouTube URL',exact:true}).fill('https://example.com/remote-cat.webp');
+  await page.getByRole('button',{name:'Load image',exact:true}).click();
+  await page.waitForFunction(() => !document.querySelector('.new-image-modal'));
+  assert.equal(await page.locator('.file-kind').textContent(),'JPEG');
+  console.log('PASS: New image dialog, clipboard paste, URL import, content detection, and out-of-range YouTube timestamp error');
+  await page.getByRole('textbox', { name: 'Text content' }).fill('HELLO FROM FREEMEMES');
+  await page.getByRole('spinbutton', { name: 'Max font size', exact: true }).fill('50');
+  await page.getByRole('spinbutton', { name: 'Font size', exact: true }).fill('20');
+  const sizeBefore = await page.getByRole('spinbutton', { name: 'Font size', exact: true }).inputValue();
+  await page.getByRole('button', { name: 'Increase font size', exact: true }).click();
+  assert.equal(+(await page.getByRole('spinbutton', { name: 'Font size', exact: true }).inputValue()), +sizeBefore + 2);
+  await page.getByRole('button', { name: 'Undo (⌘Z)', exact: true }).click();
+  assert.equal(await page.getByRole('spinbutton', { name: 'Font size', exact: true }).inputValue(), sizeBefore);
+  await page.getByRole('button', { name: 'Redo (⌘⇧Z)', exact: true }).click();
+  const selection = await page.locator('.selection-box').boundingBox();
+  await page.mouse.move(selection.x + selection.width / 2, selection.y + selection.height / 2);
+  await page.mouse.down(); await page.mouse.move(selection.x + selection.width / 2 + 25, selection.y + selection.height / 2 + 25, { steps: 5 }); await page.mouse.up();
+  assert.ok(+(await page.getByRole('spinbutton', { name: 'X position percent' }).inputValue()) > 50);
+  await page.getByRole('button', { name: 'Generate', exact: true }).click();
+  await page.getByRole('dialog').waitFor();
+  const png = await bytesFromResult();
+  assert.equal(png.subarray(1,4).toString(), 'PNG');
+  assert.equal(png.readUInt32BE(16), 1400);
+  await writeFile('test-results/generated.png', png);
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  console.log('PASS: initial canvas, editing, undo/redo, dragging, and PNG generation');
+
+  const encoder = GIFEncoder();
+  const palette = [[255,70,70],[70,255,70],[70,70,255]];
+  [100,200,300].forEach((delay,i) => encoder.writeFrame(new Uint8Array(160*100).fill(i),160,100,{palette,delay,repeat:0}));
+  encoder.finish();
+  await page.locator('input[type=file]').first().setInputFiles({ name: 'test-animation.gif', mimeType: 'image/gif', buffer: Buffer.from(encoder.bytes()) });
+  await page.waitForFunction(() => document.querySelector('.file-label')?.textContent.includes('test-animation.gif'));
+  await page.getByRole('tab', { name: 'Canvas', exact: true }).click();
+  await page.getByRole('button', { name: '1:1', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply crop', exact: true }).click();
+  await page.getByRole('tab', { name: 'GIF', exact: true }).click();
+  await page.getByRole('spinbutton', { name: 'Trim start seconds', exact: true }).fill('0.1');
+  await page.getByRole('spinbutton', { name: 'Trim end seconds', exact: true }).fill('0.5');
+  const endGrip=page.locator('.trim-handle-1');
+  const trackBox=await page.locator('.inspector .thumbnail-row').boundingBox(),gripBox=await endGrip.boundingBox();
+  const cutoff=trackBox.x+trackBox.width*500/600;
+  assert.ok(Math.abs(gripBox.x-cutoff)<1.1,'end grip must be outside the kept interval');
+  await page.mouse.move(gripBox.x+gripBox.width/2,gripBox.y+gripBox.height/2);await page.mouse.down();
+  assert.equal(+(await page.getByRole('spinbutton',{name:'Trim end seconds',exact:true}).inputValue()),.5);
+  await page.mouse.move(gripBox.x+gripBox.width/2+trackBox.width*.05,gripBox.y+gripBox.height/2);await page.mouse.up();
+  assert.equal(+(await page.getByRole('spinbutton',{name:'Trim end seconds',exact:true}).inputValue()),.53);
+  await page.getByRole('spinbutton',{name:'Trim end seconds',exact:true}).fill('0.5');
+  await page.getByRole('slider',{name:'Timeline playhead',exact:true}).focus();await page.keyboard.press('End');
+  const lastPosition=+(await page.getByRole('slider',{name:'Timeline playhead',exact:true}).getAttribute('aria-valuenow'));
+  assert.equal(lastPosition,499);
+  const headBox=await page.locator('.inspector .playhead').boundingBox();assert.ok(Math.abs(headBox.x-cutoff)<2);
+  await page.keyboard.press('Home');
+  await page.getByRole('tab', { name: 'Animation', exact: true }).click();
+  assert.equal(await page.locator('.inspector .timeline-ruler>span').last().textContent(),'0.40s');
+  assert.equal(await page.getByRole('spinbutton',{name:'Animation time seconds',exact:true}).getAttribute('max'),'0.4');
+  await page.getByRole('slider',{name:'Timeline playhead',exact:true}).click({position:{x:100,y:20}});
+  await page.getByRole('slider',{name:'Timeline playhead',exact:true}).focus();await page.keyboard.press('Home');
+  assert.equal(+(await page.getByRole('spinbutton',{name:'Animation time seconds',exact:true}).inputValue()),0);
+  await page.getByRole('button', { name: /Add keyframe/ }).click();
+  await page.getByRole('spinbutton', { name: 'Animation time seconds' }).fill('0.39');
+  await page.getByRole('tab', { name: 'Object', exact: true }).click();
+  await page.getByRole('spinbutton', { name: 'X position percent' }).fill('75');
+  await page.getByRole('tab', { name: 'Animation', exact: true }).click();
+  assert.equal(await page.locator('.keyframe-list>div').count(), 2);
+  await page.getByRole('combobox', { name: 'Interpolation', exact: true }).selectOption('smooth');
+  await page.getByRole('button', { name: 'Play preview', exact: true }).click();
+  await page.waitForTimeout(120);
+  await page.getByRole('button', { name: 'Pause preview', exact: true }).click();
+  const paused = await page.locator('.preview-playback .time-display').textContent();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('.preview-playback .time-display').textContent(), paused);
+  await page.getByRole('combobox', { name: 'Export width', exact: true }).selectOption('original');
+  await page.getByRole('spinbutton',{name:'GIF FPS',exact:true}).fill('25');
+  await page.getByRole('button', { name: 'Generate', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ timeout: 30000 });
+  const gif = await bytesFromResult();
+  const parsed = parseGIF(gif.buffer.slice(gif.byteOffset,gif.byteOffset+gif.byteLength));
+  const frames = decompressFrames(parsed,true);
+  assert.equal(parsed.lsd.width,100); assert.equal(parsed.lsd.height,100);
+  assert.equal(frames.reduce((sum,f) => sum + f.delay,0),400);
+  assert.equal(frames.length,10);
+  assert.ok(frames.every(frame=>frame.delay===40));
+  assert.notDeepEqual(frames[0].patch,frames[frames.length-1].patch);
+  const gifClipboardAvailable=await page.evaluate(()=>Boolean(navigator.clipboard?.write && globalThis.ClipboardItem?.supports?.('image/gif')));
+  assert.equal(await page.getByRole('button',{name:'Copy GIF',exact:true}).count(),gifClipboardAvailable ? 1 : 0);
+  assert.equal(await page.getByRole('button',{name:'How to copy',exact:true}).count(),0);
+  assert.match(await page.locator('.copy-tip').textContent(),/still frame/);
+  assert.match(await page.getByRole('link',{name:'Download GIF',exact:true}).getAttribute('download'),/\.gif$/);
+  await writeFile('test-results/generated.gif',gif);
+  await page.screenshot({path:'test-results/gif-result.png',fullPage:true});
+  console.log(`PASS: GIF upload, square crop, trimming, keyframes, interpolation, pause, and GIF export (${frames.length} frames, 400ms)`);
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await page.locator('input[type=file]').nth(1).setInputFiles('public/studio-cat.jpg');
+  await page.waitForFunction(() => document.querySelectorAll('.layer-row').length === 3);
+  await page.getByRole('tab',{name:'Object',exact:true}).click();
+  await page.getByRole('button', { name: 'Duplicate layer', exact: true }).click();
+  assert.equal(await page.locator('.layer-row').count(),4);
+  await page.getByRole('button', { name: 'Delete layer', exact: true }).click();
+  assert.equal(await page.locator('.layer-row').count(),3);
+  await page.getByRole('button',{name:'New image',exact:true}).click();
+  await page.getByRole('tab',{name:'Upload',exact:true}).click();
+  await page.getByLabel('Upload new image',{exact:true}).setInputFiles('public/studio-cat.jpg');
+  await page.waitForFunction(() => !document.querySelector('.new-image-modal'));
+  assert.equal(await page.locator('.file-kind').textContent(),'JPEG');
+  assert.equal(await page.getByRole('tab',{name:'GIF',exact:true}).count(),0);
+  assert.equal(await page.locator('.trim-handle').count(),0);
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:'test-results/mobile.png',fullPage:true});
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  assert.deepEqual(errors,[]);
+  console.log('PASS: image layers, duplication, deletion, mobile layout, and no browser errors');
+} finally { await browser.close(); }

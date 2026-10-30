@@ -1,0 +1,21 @@
+name: freememes
+
+services:
+  freememes:
+    image: freememes:local
+    build:
+      context: .
+      args:
+        YT_DLP_VERSION: ${YT_DLP_VERSION:-2026.10.26}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${FREEMEMES_HOST:-127.0.0.1}:${FREEMEMES_PORT:-5173}:5173"
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s

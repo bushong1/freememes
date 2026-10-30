@@ -1,0 +1,31 @@
+{
+  "name": "freememes",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "node server/index.js",
+    "test": "vite build && node --test --test-isolation=none tests/*.test.js",
+    "test:browser": "npm run build && node tests/browser.mjs"
+  },
+  "dependencies": {
+    "gifenc": "^1.0.3",
+    "gifuct-js": "^2.1.2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^0.1.80",
+    "playwright": "^1.56.1",
+    "vite": "^6.4.1",
+    "happy-dom": "^20.0.11",
+    "esbuild": "^0.25.12"
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  }
+}

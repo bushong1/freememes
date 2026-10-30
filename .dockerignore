@@ -1,0 +1,16 @@
+node_modules
+.npm
+.npmrc
+.venv
+dist
+test-results
+coverage
+.git
+.agents
+.codex
+.aws
+.env
+.env.*
+.DS_Store
+*.log
+npm-debug.log*
