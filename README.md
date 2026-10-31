@@ -30,6 +30,39 @@ docker compose exec freememes ffmpeg -version
 docker compose exec freememes ffprobe -version
 ```
 
+## Release to GHCR
+
+Authenticate once on the publishing machine using a GitHub personal access token (classic) with `write:packages` permission. Put the token in `GHCR_TOKEN`, then log in using your GitHub username:
+
+```sh
+printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u bushong1 --password-stdin
+```
+
+See [GitHub’s GHCR authentication instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-with-a-personal-access-token-classic) for token creation and organization SSO requirements.
+
+Build and push a release:
+
+```sh
+npm run release -- 1.0.1
+```
+
+This publishes `ghcr.io/bushong1/freememes:1.0.1` and `ghcr.io/bushong1/freememes:latest` for both `linux/amd64` and `linux/arm64`. With no tag argument, `npm run release` uses the version from `package.json`. Stable version tags such as `1.0.1` or `v1.0.1` update `latest`; prerelease and custom tags only publish their named tag. Images include OCI source, version, and Git revision labels.
+
+Preview the destination, tags, platforms, and exact build command:
+
+```sh
+npm run release -- 1.0.1 --dry-run
+```
+
+The default destination is inferred from the GitHub `origin` remote, falling back to `ghcr.io/bushong1/freememes` outside a checkout. Override it or the target platforms when needed:
+
+```sh
+GHCR_IMAGE=ghcr.io/my-org/freememes npm run release -- 1.0.1
+RELEASE_PLATFORMS=linux/amd64 npm run release -- 1.0.1
+```
+
+Releases require a running Docker engine with Buildx and support for the requested platforms; see [Docker’s multi-platform builder setup](https://docs.docker.com/build/building/multi-platform/). `NODE_VERSION` and `YT_DLP_VERSION` can override the corresponding Docker build arguments. The command uses your existing Docker login and builds the current working tree, without changing the package version or creating Git tags.
+
 ## Run locally
 
 Requires Node.js 22.16 or newer.

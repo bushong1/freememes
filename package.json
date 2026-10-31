@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server/index.js",
+    "release": "node scripts/release.mjs",
     "test": "vite build && node --test --test-isolation=none tests/*.test.js",
     "test:browser": "npm run build && node tests/browser.mjs"
   },
